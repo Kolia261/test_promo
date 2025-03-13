@@ -134,15 +134,25 @@ def process_ref_code(message):
     conn = sqlite3.connect('users.db')
     cursor = conn.cursor()
 
+    # Проверяем, не пытается ли пользователь использовать свой собственный код
+    cursor.execute("SELECT ref_code FROM users WHERE user_id = ?", (user_id,))
+    own_ref_code = cursor.fetchone()
+    if own_ref_code and own_ref_code[0] == ref_code:
+        bot.send_message(user_id, "❌ You cannot use your own referral code!")
+        conn.close()
+        return
+
     cursor.execute("SELECT user_id FROM users WHERE ref_code = ?", (ref_code,))
     referrer = cursor.fetchone()
 
     if referrer:
         referrer_id = referrer[0]
 
-        # Проверяем, чтобы пользователь не использовал рефкод повторно
+        # Проверяем, использовал ли пользователь уже реферальный код
         cursor.execute("SELECT used_ref_code FROM users WHERE user_id = ?", (user_id,))
-        used_ref_code = cursor.fetchone()[0]
+        result = cursor.fetchone()
+        used_ref_code = result[0] if result else None
+
         if used_ref_code:
             bot.send_message(user_id, "❌ You have already used a referral code.")
             conn.close()
@@ -155,10 +165,9 @@ def process_ref_code(message):
 
         # Уведомление реферера
         bot.send_message(referrer_id, f"🎉 You have a new referral! {message.from_user.first_name} joined using your code.")
-
-        bot.send_message(user_id, "✅ Referral code applied successfully!")
+        bot.send_message(user_id, "✅ Referral code successfully applied!")
     else:
-        bot.send_message(user_id, "❌ Invalid referral code. Try again.")
+        bot.send_message(user_id, "❌ Invalid referral code. Please try again.")
 
     conn.close()
 
@@ -320,12 +329,23 @@ def check_payment(call):
 @bot.callback_query_handler(func=lambda call: call.data == "invite_3_friends")
 def invite_friends(call):
     user_id = call.message.chat.id
-    user = get_user(user_id)
-
-    if len(user) >= 8:
-        invited_friends = user[7]  # Количество приглашенных друзей
+    conn = sqlite3.connect('users.db')
+    cursor = conn.cursor()
+    
+    # Получаем информацию о пользователе
+    cursor.execute("SELECT invited_friends FROM users WHERE user_id = ?", (user_id,))
+    result = cursor.fetchone()
+    
+    if result:
+        invited_friends = result[0]
         if invited_friends >= 2:
+            # Выбираем случайный промокод
             promo_code = random.choice(PROMO_CODES)
+            
+            # Обновляем количество приглашенных друзей (сбрасываем счетчик)
+            cursor.execute("UPDATE users SET invited_friends = 0 WHERE user_id = ?", (user_id,))
+            conn.commit()
+            
             bot.send_message(
                 call.message.chat.id,
                 f"🎉 Congratulations! You've invited 2 friends and earned a free promo code:\n\n"
@@ -335,10 +355,15 @@ def invite_friends(call):
                 disable_web_page_preview=True
             )
         else:
-            invited_friends = 0
-            bot.send_message(user_id, f"❌ You need {2 - invited_friends} more friends to get a free promo code.")
+            bot.send_message(
+                user_id, 
+                f"❌ You need to invite {2 - invited_friends} more friends to get a free promo code.\n"
+                f"👥 Current invited friends: {invited_friends}"
+            )
     else:
         bot.send_message(user_id, "❌ Profile not found!")
+    
+    conn.close()
 
 
 
@@ -358,3 +383,4 @@ init_db()
 # Start bot
 logging.info("Bot is starting...")
 bot.polling(none_stop=True) 
+ 
