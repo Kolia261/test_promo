@@ -7,8 +7,8 @@ import time
 import random, string
 
 # Initialize bot and set up API
-API_TOKEN = "7927646488:AAESP-k-oDJwTRlCin22IfEXPxkZzfYY4cQ"
-CRYPTO_PAY_API_TOKEN = "346879:AAJaauJ6q2ZqQdOzGploB7t4PCFtdT1exOr"
+API_TOKEN = "7785892216:AAEh7sL6xXfTa7MR8NryYEkaFe1_vSrieg8"
+CRYPTO_PAY_API_TOKEN = "352203:AASE7av52X3rkiTCUD4evQuIILeMScmPXxw"
 bot = telebot.TeleBot(API_TOKEN)
 
 # Set up logging
@@ -26,11 +26,13 @@ def init_db():
             total_orders REAL DEFAULT 0.0,
             ref_code TEXT UNIQUE,
             used_ref_code TEXT DEFAULT NULL,
-            referrer_id INTEGER DEFAULT NULL
+            referrer_id INTEGER DEFAULT NULL,
+            invited_friends INTEGER DEFAULT 0
         )
     ''')
     conn.commit()
     conn.close()
+
 
 def generate_ref_code():
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
@@ -47,48 +49,45 @@ def add_user(user_id, name):
     conn = sqlite3.connect('users.db')
     cursor = conn.cursor()
     ref_code = generate_ref_code()
-    cursor.execute("INSERT INTO users (user_id, name, ref_code) VALUES (?, ?, ?)", (user_id, name, ref_code))
+    cursor.execute("""
+        INSERT INTO users (user_id, name, ref_code, invited_friends) 
+        VALUES (?, ?, ?, ?)
+    """, (user_id, name, ref_code, 0))
     conn.commit()
     conn.close()
-    return ref_code 
+    return ref_code
+
 
 # Function to create invoice
-def create_invoice(asset, amount, description):
-    logging.info(f"Creating invoice for {asset} {amount}...")
+def create_invoice(asset, amount, description, retries=3, delay=5):
     url = "https://pay.crypt.bot/api/createInvoice"
-    payload = {
-        "asset": asset,
-        "amount": str(amount),
-        "description": description
-    }
-    headers = {
-        "Crypto-Pay-API-Token": CRYPTO_PAY_API_TOKEN
-    }
-    response = requests.post(url, json=payload, headers=headers)
-    if response.status_code == 200:
-        logging.info(f"Invoice created successfully: {response.json()}")
-        return response.json()
-    else:
-        logging.error(f"Error creating invoice: {response.text}")
-        return None
+    payload = {"asset": asset, "amount": str(amount), "description": description}
+    headers = {"Crypto-Pay-API-Token": CRYPTO_PAY_API_TOKEN}
+
+    for attempt in range(retries):
+        try:
+            response = requests.post(url, json=payload, headers=headers)
+            if response.status_code == 200:
+                return response.json().get('result', None)
+        except requests.exceptions.ConnectionError:
+            print(f"Connection error. Retrying in {delay} seconds...")
+            time.sleep(delay)
+    return None
 
 # Function to check invoice status
 def get_invoice(invoice_id):
-    logging.info(f"Checking invoice status for ID: {invoice_id}...")
-    url = f"https://pay.crypt.bot/api/getInvoice"
-    params = {
-        "invoice_id": invoice_id
-    }
-    headers = {
-        "Crypto-Pay-API-Token": CRYPTO_PAY_API_TOKEN
-    }
-    response = requests.get(url, params=params, headers=headers)
+    url = f"https://pay.crypt.bot/api/getInvoice?invoice_id={invoice_id}"
+    headers = {"Crypto-Pay-API-Token": CRYPTO_PAY_API_TOKEN}
+    response = requests.get(url, headers=headers)
+
     if response.status_code == 200:
-        logging.info(f"Invoice status retrieved: {response.json()}")
-        return response.json()
+        result = response.json().get('result', None)
+        print(f"Invoice data: {result}")  # Лог данных
+        return result
     else:
-        logging.error(f"Error getting invoice: {response.text}")
-        return None
+        print(f"Error fetching invoice: {response.text}")  # Лог ошибок
+    return None
+
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
@@ -132,35 +131,37 @@ def ask_for_ref_code(message):
 
 def process_ref_code(message):
     user_id, ref_code = message.chat.id, message.text.strip().upper()
-    user = get_user(user_id)
-    
-    if user:
-        # Проверяем, использовал ли пользователь уже промокод
-        if user[5]:
-            bot.send_message(user_id, "❌ You have already used a referral code!")
-            return
-        
-        # Проверяем, не пытается ли пользователь использовать свой собственный промокод
-        if user[4] == ref_code:
-            bot.send_message(user_id, "❌ You cannot use your own referral code!")
-            return
-
     conn = sqlite3.connect('users.db')
     cursor = conn.cursor()
+
     cursor.execute("SELECT user_id FROM users WHERE ref_code = ?", (ref_code,))
     referrer = cursor.fetchone()
-    
+
     if referrer:
         referrer_id = referrer[0]
+
+        # Проверяем, чтобы пользователь не использовал рефкод повторно
+        cursor.execute("SELECT used_ref_code FROM users WHERE user_id = ?", (user_id,))
+        used_ref_code = cursor.fetchone()[0]
+        if used_ref_code:
+            bot.send_message(user_id, "❌ You have already used a referral code.")
+            conn.close()
+            return
+
+        # Обновление данных
         cursor.execute("UPDATE users SET used_ref_code = ?, referrer_id = ? WHERE user_id = ?", (ref_code, referrer_id, user_id))
-        cursor.execute("UPDATE users SET balance = balance + 1 WHERE user_id = ?", (referrer_id,))
+        cursor.execute("UPDATE users SET balance = balance + 1, invited_friends = invited_friends + 1 WHERE user_id = ?", (referrer_id,))
         conn.commit()
+
+        # Уведомление реферера
+        bot.send_message(referrer_id, f"🎉 You have a new referral! {message.from_user.first_name} joined using your code.")
+
         bot.send_message(user_id, "✅ Referral code applied successfully!")
-        bot.send_message(referrer_id, "🎉 You earned a referral reward! 1 point added.")
     else:
         bot.send_message(user_id, "❌ Invalid referral code. Try again.")
-    
+
     conn.close()
+
 
 @bot.message_handler(func=lambda message: message.text == "🏠 Main Menu")
 def main_menu(message):
@@ -191,8 +192,15 @@ def show_profile(message):
     user_id = message.chat.id
     user = get_user(user_id)
     if user:
-        name, balance, total_orders, ref_code, used_ref_code = user[1:6]
-        profile_msg = f"❤ Name: {name}\n🔑 ID: {user_id}\n💰 Balance: {balance}\n💲 Total orders: {total_orders}\n🆔 Referral code: `{ref_code}`"
+        name, balance, total_orders, ref_code, used_ref_code, invited_friends = user[1:7]
+        profile_msg = (
+            f"❤ Name: {name}\n"
+            f"🔑 ID: {user_id}\n"
+            f"💰 Balance: {balance}\n"
+            f"💲 Total orders: {total_orders}\n"
+            f"🆔 Referral code: `{ref_code}`\n"
+            f"🤝 Invited friends: {invited_friends}"
+        )
         if used_ref_code:
             profile_msg += f"\n🔗 Used referral code: `{used_ref_code}`"
     else:
@@ -203,6 +211,7 @@ def show_profile(message):
     markup.add(types.InlineKeyboardButton(text="🔙 Back", callback_data="back_start"))
 
     bot.send_message(message.chat.id, profile_msg, parse_mode="Markdown", reply_markup=markup)
+
 
 
 # Order history
@@ -258,21 +267,14 @@ def buy_promo(call):
     send_invoice(call.message, asset, amount, 'Buying promo code')
 
 # Function to create and send invoice
-def send_invoice(message, asset, amount, period):
-    logging.info(f"Sending invoice for {amount} {asset} to {message.chat.id} for {period}")
-    invoice = create_invoice(asset, amount, f'Payment for {period}')
-    if invoice and 'result' in invoice:
-        invoice_data = invoice['result']
+def send_invoice(message, asset, amount, description):
+    invoice = create_invoice(asset, amount, description)
+    if invoice:
         keyboard = types.InlineKeyboardMarkup()
-        keyboard.add(types.InlineKeyboardButton(text='💰 Pay', url=invoice_data['pay_url']))
-        keyboard.add(types.InlineKeyboardButton(text='🔄 Check', callback_data=f'check|{invoice_data["invoice_id"]}|{amount}|{asset}|{period}'))
-        keyboard.add(types.InlineKeyboardButton(text='🔙 Back', callback_data='back_start'))
-        bot.send_message(message.chat.id,
-                         f'Amount to pay: {amount} {asset}\n'
-                         f'Once the payment is complete, click "Check" to confirm.',
-                         reply_markup=keyboard)
-    else:
-        bot.reply_to(message, 'An error occurred while creating the invoice. Please try again later.')
+        keyboard.add(types.InlineKeyboardButton(text='💰 Pay', url=invoice['pay_url']))
+        keyboard.add(types.InlineKeyboardButton(text='🔄 Check', callback_data=f'check|{invoice["invoice_id"]}|{amount}'))
+        keyboard.add(types.InlineKeyboardButton(text='🧑‍🤝‍🧑 Invite 2 friends', callback_data='invite_3_friends'))
+        bot.send_message(message.chat.id, f'Amount to pay: {amount} {asset}', reply_markup=keyboard)
 
 # Список промокодов
 PROMO_CODES = [
@@ -290,22 +292,55 @@ PROMO_CODES = [
 # Обработчик проверки оплаты
 @bot.callback_query_handler(func=lambda call: call.data.startswith('check'))
 def check_payment(call):
-    logging.info(f"Checking payment status for invoice {call.data}")
-    _, invoice_id, amount, asset, period = call.data.split('|')
+    _, invoice_id, amount = call.data.split('|')
     invoice_data = get_invoice(invoice_id)
-    
-    if invoice_data and invoice_data['result']['status'] == 'paid':
-        promo_code = random.choice(PROMO_CODES)  # Выбираем случайный промокод
+    if invoice_data and invoice_data.get('status') == 'paid' and str(invoice_data.get('amount')) == amount:
+        conn = sqlite3.connect('users.db')
+        cursor = conn.cursor()
+        cursor.execute("UPDATE users SET total_orders = total_orders + 1 WHERE user_id = ?", (call.message.chat.id,))
+        conn.commit()
+        conn.close()
+        
+        # Выбор случайного промокода
+        promo_code = random.choice(PROMO_CODES)
+        
+        bot.send_message(call.message.chat.id, f'✅ Payment of {amount} confirmed.')
         bot.send_message(
             call.message.chat.id,
-            f"✅ Payment of {amount} {asset} successfully completed.\n\n"
-            f"🎁 Your promo code: `{promo_code}`\n"
-            f"🔗 Use it here: [BitWin](https://bitwin.exchange/)",
+            f"🎁 Here's your promo code: `{promo_code}`\n"
+            "🔗 Use it here: [BitWin](https://bitwin.exchange/)",
             parse_mode="Markdown",
             disable_web_page_preview=True
         )
     else:
-        bot.send_message(call.message.chat.id, "❌ Payment not confirmed. Please try again later.")
+        bot.send_message(call.message.chat.id, "❌ Payment not confirmed. Try again later.")
+
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "invite_3_friends")
+def invite_friends(call):
+    user_id = call.message.chat.id
+    user = get_user(user_id)
+
+    if len(user) >= 8:
+        invited_friends = user[7]  # Количество приглашенных друзей
+        if invited_friends >= 2:
+            promo_code = random.choice(PROMO_CODES)
+            bot.send_message(
+                call.message.chat.id,
+                f"🎉 Congratulations! You've invited 2 friends and earned a free promo code:\n\n"
+                f"🎁 Your promo code: `{promo_code}`\n"
+                f"🔗 Use it here: [BitWin](https://bitwin.exchange/)",
+                parse_mode="Markdown",
+                disable_web_page_preview=True
+            )
+        else:
+            invited_friends = 0
+            bot.send_message(user_id, f"❌ You need {2 - invited_friends} more friends to get a free promo code.")
+    else:
+        bot.send_message(user_id, "❌ Profile not found!")
+
+
 
 
 # Handler for "Back" button
