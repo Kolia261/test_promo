@@ -39,6 +39,27 @@ def generate_promo_code():
     letters = ''.join(random.choices(string.ascii_uppercase, k=3))
     return f"{prefix}_{numbers}{letters}"
 
+# Списки промокодов для разных сайтов
+BITWIN_PROMO_CODES = [
+    "xO0KfdJNwH", "first3000dollars", "BITWIN_Free_1000DOGE",
+    "BitWinPROMO_3333TRX", "Promo444XRP_BitWin", "yoPx9IbDmr",
+    "edvOiPvQJN", "secretOFtron", "hackDOUBLETether",
+    "TRON_EzGo2FREECODE", "FREEweu10kUSDT", "LiK4S8bxNf",
+    "MoRethenLITE", "ZaluPA9999", "2xRE4FiWhn", "U7Q7OSnEMx",
+    "hidden_3ao7ZpZtA4i", "fReE1oo0vWyQ3mm258", "05SOLmhstGvL4RD",
+    "KinuL_LoHAnaTROn", "11Bitcoion4_you_BitWinCC", "MY11SOLANA_CCBITWIN",
+    "PURCHASE_2MILLION", "CRAzyFrOG_123", "BNB420NigerOG",
+    "FyP9f24vxe_aim999usdt", "Fig8q238-8-20SOLANAbonusCLUB_20",
+    "LUCKY3MILL", "ChristmasGIFT1488", "allahuakbarLIMITEDTETHER",
+    "SANTASAVINGS", "LEGIT_FREE_3_BTC", "2guo_PIDIDI",
+    "BOMBOCLAT_millioner", "NAG_CHAMPA2025", "DUPA_XRP2024",
+    "freeRose500doll", "Sa7Yk9vUR2VFN", "DINO-CODE1029098",
+    "m4V8TurboGTRS", "makerS13", "EASYmoney_4U", "freeRose_500doll",
+    "Rolex4U_brr"
+]
+
+MONETURO_PROMO_CODES = ["M0neTUR01", "PROMOofSecretMILLION"]
+
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     user_id = message.chat.id
@@ -149,15 +170,23 @@ def ask_for_link(message):
     msg = bot.send_message(
         message.chat.id,
         "🔗 Please enter the link to receive your promo code:\n"
-        "(Must start with http:// or https://)"
+        "(Must start with http:// or https://)\n"
+        "⚠️ Important: The link must be entered exactly!"
     )
     bot.register_next_step_handler(msg, process_link)
 
+def get_promo_code_for_site(link):
+    if link == "https://bitwin.exchange":
+        return random.choice(BITWIN_PROMO_CODES)
+    elif link == "https://moneturo.com":
+        return random.choice(MONETURO_PROMO_CODES)
+    return None
+
 def process_link(message):
     link = message.text.strip()
-    if re.match(r'https?://[^\s<>"]+|www\.[^\s<>"]+', link):
-        promo_code = generate_promo_code()
-        
+    promo_code = get_promo_code_for_site(link)
+    
+    if promo_code:
         conn = sqlite3.connect('users.db')
         cursor = conn.cursor()
         cursor.execute("""
