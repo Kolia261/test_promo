@@ -4,394 +4,304 @@ import requests
 import logging
 from telebot import types
 import time
+import random, string
+import re
+from datetime import datetime
 
 # Initialize bot and set up API
 API_TOKEN = "7927646488:AAESP-k-oDJwTRlCin22IfEXPxkZzfYY4cQ"
-CRYPTO_PAY_API_TOKEN = "346879:AAJaauJ6q2ZqQdOzGploB7t4PCFtdT1exOr"
+CRYPTO_PAY_API_TOKEN = "352203:AASE7av52X3rkiTCUD4evQuIILeMScmPXxw"
 bot = telebot.TeleBot(API_TOKEN)
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
 
 # SQLite for storing user data
 def init_db():
     conn = sqlite3.connect('users.db')
     cursor = conn.cursor()
-    cursor.execute(''' 
+    cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
             name TEXT,
-            balance REAL DEFAULT 0.0,
-            total_orders REAL DEFAULT 0.0
+            total_generated INTEGER DEFAULT 0,
+            last_generated TIMESTAMP,
+            premium_until TIMESTAMP DEFAULT NULL,
+            total_donated REAL DEFAULT 0.0
         )
     ''')
     conn.commit()
     conn.close()
 
-init_db()
+def generate_promo_code():
+    prefix = random.choice(["WIN", "BONUS", "PROMO", "SPECIAL", "VIP", "ELITE", "SUPER"])
+    numbers = ''.join(random.choices(string.digits, k=4))
+    letters = ''.join(random.choices(string.ascii_uppercase, k=3))
+    return f"{prefix}_{numbers}{letters}"
 
-# Function to create invoice
-def create_invoice(asset, amount, description):
-    url = "https://pay.crypt.bot/api/createInvoice"
-    payload = {
-        "asset": asset,
-        "amount": str(amount),
-        "description": description
-    }
-    headers = {
-        "Crypto-Pay-API-Token": CRYPTO_PAY_API_TOKEN
-    }
-    response = requests.post(url, json=payload, headers=headers)
-    if response.status_code == 200:
-        return response.json()
-    else:
-        logging.error(f"Error creating invoice: {response.text}")
-        return None
-
-# Function to check invoice status
-def get_invoice(invoice_id):
-    url = f"https://pay.crypt.bot/api/getInvoice"
-    params = {
-        "invoice_id": invoice_id
-    }
-    headers = {
-        "Crypto-Pay-API-Token": CRYPTO_PAY_API_TOKEN
-    }
-    response = requests.get(url, params=params, headers=headers)
-    if response.status_code == 200:
-        return response.json()
-    else:
-        logging.error(f"Error getting invoice: {response.text}")
-        return None
-
-# Start menu
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    bot.send_message(
-        message.chat.id,
-        "✨Thank you for choosing our service. Here you will find promo codes for various cryptocurrencies. Don't worry about security, we sell only guaranteed promo codes.",
-        reply_markup=start_menu()
-    )
-
-# Main menu
-def start_menu():
-    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    keyboard.add(types.KeyboardButton("📝 Rules"))
-    keyboard.add(types.KeyboardButton("👤 Profile"))
-    keyboard.add(types.KeyboardButton("🔍 Find promo code"))
-    return keyboard
-
-# Handler for "Rules" button
-@bot.message_handler(func=lambda message: message.text == "📝 Rules")
-def show_rules(message):
-    bot.send_message(message.chat.id, "📌 All promo codes come with a 72-hour guarantee after purchase.\n⚠ If the promo code becomes invalid due to your actions, a refund is not possible.")
-
-# Handler for "Profile" button
-@bot.message_handler(func=lambda message: message.text == "👤 Profile")
-def show_profile(message):
     user_id = message.chat.id
     conn = sqlite3.connect('users.db')
     cursor = conn.cursor()
-    
-    # Check if the user already exists
-    cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
-    user = cursor.fetchone()
-
-    if user:
-        name, balance, total_orders = user[1], user[2], user[3]
-    else:
-        # If no user, insert them with just the first name
-        first_name = message.from_user.first_name
-        cursor.execute("INSERT INTO users (user_id, name) VALUES (?, ?)", (user_id, first_name))
-        conn.commit()
-        name = first_name  # Set the name as their first name
-        balance, total_orders = 0.0, 0.0
-
-    profile_msg = f"❤ Name: {name}\n🔑 ID: {user_id}\n💰 Your balance: {balance}\n💲 Total orders: {total_orders}"
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton(text="📜 Order History", callback_data="order_history"))
-    markup.add(types.InlineKeyboardButton(text="🎁 Referral System", callback_data="referral_system"))
-    markup.add(types.InlineKeyboardButton(text="🔙 Back", callback_data="back_start"))
-    bot.send_message(message.chat.id, profile_msg, reply_markup=markup)
-
-
-# Order history
-@bot.callback_query_handler(func=lambda call: call.data == "order_history")
-def order_history(call):
-    user_id = call.message.chat.id
-    conn = sqlite3.connect('users.db')
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
-    user = cursor.fetchone()
-    if user:
-        total_orders = user[3]
-        bot.send_message(call.message.chat.id, f"📦 You have {total_orders} orders.")
-    else:
-        bot.send_message(call.message.chat.id, "📦 You have no orders.")
-
-# Referral system
-@bot.callback_query_handler(func=lambda call: call.data == "referral_system")
-def referral_system(call):
-    user_id = call.message.chat.id
-    referral_link = f"https://t.me/{bot.get_me().username}?start={user_id}"
-    bot.send_message(call.message.chat.id, f"💡 A referral system is enabled! Invite friends and earn money.\n💰 You will receive: 1% of each purchase your referral makes.\n🔗 Your referral link: {referral_link}")
-
-@bot.message_handler(func=lambda message: message.text == "🔍 Find promo code")
-def find_promo_code(message):
-    # Send "Spinning the wheel..." message and remove keyboard
-    markup = types.ReplyKeyboardRemove()
-    sent_message = bot.send_message(message.chat.id, "🎰 Spinning the wheel...", reply_markup=markup)
-
-    # Delay 3 seconds
-    time.sleep(3)
-
-    # Delete the message
-    bot.delete_message(message.chat.id, sent_message.message_id)
-
-    # Send main message
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton(text="💰 Buy promo code", callback_data="buy_promo"))
-    markup.add(types.InlineKeyboardButton(text="🔙 Back", callback_data="back_start"))
-    bot.send_message(message.chat.id, "📃 Platform: {link} (hidden)\n📃 Promo code: {code} (hidden)", reply_markup=markup)
-
-# Handler for buying promo code
-@bot.callback_query_handler(func=lambda call: call.data == "buy_promo")
-def buy_promo(call):
-    asset = 'USDT'
-    amount = 5
-    send_invoice(call.message, asset, amount, 'Buying promo code')
-
-# Function to create and send invoice
-def send_invoice(message, asset, amount, period):
-    invoice = create_invoice(asset, amount, f'Payment for {period}')
-    if invoice and 'result' in invoice:
-        invoice_data = invoice['result']
-        keyboard = types.InlineKeyboardMarkup()
-        keyboard.add(types.InlineKeyboardButton(text='💰 Pay', url=invoice_data['pay_url']))
-        keyboard.add(types.InlineKeyboardButton(text='🔄 Check', callback_data=f'check|{invoice_data["invoice_id"]}|{amount}|{asset}|{period}'))
-        keyboard.add(types.InlineKeyboardButton(text='🔙 Back', callback_data='back_start'))
-        bot.send_message(message.chat.id,
-                         f'Amount to pay: {amount} {asset}\n'
-                         f'Once the payment is complete, click "Check" to confirm.',
-                         reply_markup=keyboard)
-    else:
-        bot.reply_to(message, 'An error occurred while creating the invoice. Please try again later.')
-
-# Handler for payment status check
-@bot.callback_query_handler(func=lambda call: call.data.startswith('check'))
-def check_payment(call):
-    _, invoice_id, amount, asset, period = call.data.split('|')
-    invoice_data = get_invoice(invoice_id)
-    if invoice_data and invoice_data['result']['status'] == 'paid':
-        bot.send_message(call.message.chat.id, f"✅ Payment of {amount} {asset} successfully completed.\nYour promo code: {invoice_data['result']['code']}")
-    else:
-        bot.send_message(call.message.chat.id, "❌ Payment not confirmed. Please try again later.")
-
-# Handler for "Back" button
-@bot.callback_query_handler(func=lambda call: call.data == "back_start")
-def back_to_start(call):
-    bot.send_message(
-        call.message.chat.id,
-        "You are now back at the main menu.",
-        reply_markup=start_menu()
-    )
-
-# Start bot
-bot.polling(none_stop=True)
-
-
-import telebot
-import sqlite3
-import requests
-import logging
-from telebot import types
-import time
-
-# Initialize bot and set up API
-API_TOKEN = "7927646488:AAESP-k-oDJwTRlCin22IfEXPxkZzfYY4cQ"
-CRYPTO_PAY_API_TOKEN = "346879:AAJaauJ6q2ZqQdOzGploB7t4PCFtdT1exOr"
-bot = telebot.TeleBot(API_TOKEN)
-
-# SQLite for storing user data
-def init_db():
-    conn = sqlite3.connect('users.db')
-    cursor = conn.cursor()
-    cursor.execute(''' 
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            name TEXT,
-            balance REAL DEFAULT 0.0,
-            total_orders REAL DEFAULT 0.0
-        )
-    ''')
+    cursor.execute("""
+        INSERT OR IGNORE INTO users 
+        (user_id, name, total_generated, last_generated) 
+        VALUES (?, ?, 0, NULL)
+    """, (user_id, message.from_user.first_name))
     conn.commit()
     conn.close()
 
-init_db()
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.row(types.KeyboardButton("🎁 Generate Promo Code"))
+    markup.row(types.KeyboardButton("💎 Support us"), types.KeyboardButton("👑 Premium"))
+    markup.row(types.KeyboardButton("📊 My Stats"), types.KeyboardButton("ℹ️ Help"))
 
-# Function to create invoice
+    welcome_text = (
+        "🌟 Welcome to our Premium Promo Code Service! 🌟\n\n"
+        "Our goal is to help you unlock exclusive offers and rewards. "
+        "By using our bot, you gain access to hidden promo codes that can give you amazing discounts and bonuses.\n\n"
+        "🔥 Features:\n"
+        "• Generate unique promo codes\n"
+        "• Get premium access for special codes\n"
+        "• Track your usage statistics\n"
+        "• 24/7 code generation\n\n"
+        "Get ready to discover exciting surprises and save big with our carefully curated promo codes! 🎉"
+    )
+    
+    bot.send_message(user_id, welcome_text, reply_markup=markup)
+
+@bot.message_handler(func=lambda message: message.text == "ℹ️ Help")
+def show_help(message):
+    help_text = (
+        "🔍 Bot Commands and Features:\n\n"
+        "🎁 Generate Promo Code - Get a unique promo code\n"
+        "💎 Support us - Support our service with crypto\n"
+        "👑 Premium - Get premium access\n"
+        "📊 My Stats - View your usage statistics\n"
+        "ℹ️ Help - Show this help message\n\n"
+        "✨ Premium Benefits:\n"
+        "• Priority code generation\n"
+        "• Exclusive VIP codes\n"
+        "• No daily limits\n"
+        "• Premium support\n\n"
+        "🔐 All codes are guaranteed to be unique!"
+    )
+    bot.send_message(message.chat.id, help_text)
+
+@bot.message_handler(func=lambda message: message.text == "📊 My Stats")
+def show_stats(message):
+    conn = sqlite3.connect('users.db')
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT total_generated, last_generated, premium_until, total_donated 
+        FROM users WHERE user_id = ?
+    """, (message.chat.id,))
+    stats = cursor.fetchone()
+    conn.close()
+
+    if stats:
+        total_generated, last_generated, premium_until, total_donated = stats
+        premium_status = "✅ Active" if premium_until and datetime.strptime(premium_until, '%Y-%m-%d %H:%M:%S') > datetime.now() else "❌ Inactive"
+        
+        stats_text = (
+            "📊 Your Statistics:\n\n"
+            f"🎁 Total Codes Generated: {total_generated}\n"
+            f"⏰ Last Generation: {last_generated if last_generated else 'Never'}\n"
+            f"👑 Premium Status: {premium_status}\n"
+            f"💎 Total Donated: {total_donated} USDT\n\n"
+            "Keep generating codes to improve your stats! 🚀"
+        )
+        bot.send_message(message.chat.id, stats_text)
+
+@bot.message_handler(func=lambda message: message.text == "👑 Premium")
+def show_premium(message):
+    premium_text = (
+        "👑 Premium Membership Benefits:\n\n"
+        "✨ What you get:\n"
+        "• Priority code generation\n"
+        "• Exclusive VIP promo codes\n"
+        "• Unlimited generations\n"
+        "• Premium support\n"
+        "• Early access to new features\n\n"
+        "💎 Premium Plans:\n"
+        "• 1 Week - 5 USDT\n"
+        "• 1 Month - 15 USDT\n"
+        "• 3 Months - 35 USDT"
+    )
+    
+    markup = types.InlineKeyboardMarkup()
+    markup.row(
+        types.InlineKeyboardButton("1 Week", callback_data="premium|7|5"),
+        types.InlineKeyboardButton("1 Month", callback_data="premium|30|15"),
+        types.InlineKeyboardButton("3 Months", callback_data="premium|90|35")
+    )
+    
+    bot.send_message(message.chat.id, premium_text, reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('premium'))
+def process_premium(call):
+    _, days, amount = call.data.split('|')
+    send_invoice(call.message, 'USDT', int(amount), f'Premium membership for {days} days')
+
+@bot.message_handler(func=lambda message: message.text == "🎁 Generate Promo Code")
+def ask_for_link(message):
+    msg = bot.send_message(
+        message.chat.id,
+        "🔗 Please enter the link to receive your promo code:\n"
+        "(Must start with http:// or https://)"
+    )
+    bot.register_next_step_handler(msg, process_link)
+
+def process_link(message):
+    link = message.text.strip()
+    if re.match(r'https?://[^\s<>"]+|www\.[^\s<>"]+', link):
+        promo_code = generate_promo_code()
+        
+        conn = sqlite3.connect('users.db')
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE users 
+            SET total_generated = total_generated + 1,
+                last_generated = CURRENT_TIMESTAMP
+            WHERE user_id = ?
+        """, (message.chat.id,))
+        conn.commit()
+        conn.close()
+
+        success_text = (
+            "✅ Link verified successfully!\n\n"
+            f"🎁 Here's your unique promo code: `{promo_code}`\n\n"
+            "🌟 Benefits:\n"
+            "• Guaranteed to work\n"
+            "• 72-hour validity\n"
+            "• Exclusive rewards\n\n"
+            "💫 Use it now to claim your special bonus!"
+        )
+
+        bot.send_message(
+            message.chat.id,
+            success_text,
+            parse_mode="Markdown"
+        )
+    else:
+        bot.send_message(
+            message.chat.id,
+            "❌ Invalid link format!\n\n"
+            "Please make sure your link:\n"
+            "• Starts with http:// or https://\n"
+            "• Contains no spaces\n"
+            "• Is a valid URL\n\n"
+            "Try again with a correct link format 🔄"
+        )
+
+@bot.message_handler(func=lambda message: message.text == "💎 Support us")
+def support_us(message):
+    support_text = (
+        "💎 Support Our Service!\n\n"
+        "Your contribution helps us:\n"
+        "• Maintain the service\n"
+        "• Add new features\n"
+        "• Improve code quality\n"
+        "• Provide better support\n\n"
+        "Choose your contribution amount:"
+    )
+    
+    markup = types.InlineKeyboardMarkup()
+    markup.row(
+        types.InlineKeyboardButton("5 USDT", callback_data="donate|5"),
+        types.InlineKeyboardButton("10 USDT", callback_data="donate|10"),
+        types.InlineKeyboardButton("20 USDT", callback_data="donate|20")
+    )
+    
+    bot.send_message(message.chat.id, support_text, reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('donate'))
+def process_donation(call):
+    _, amount = call.data.split('|')
+    send_invoice(call.message, 'USDT', int(amount), 'Support donation')
+
+def send_invoice(message, asset, amount, description):
+    invoice = create_invoice(asset, amount, description)
+    if invoice:
+        keyboard = types.InlineKeyboardMarkup()
+        keyboard.add(types.InlineKeyboardButton(text='💰 Pay Now', url=invoice['pay_url']))
+        keyboard.add(types.InlineKeyboardButton(text='🔄 Check Payment', callback_data=f'check|{invoice["invoice_id"]}|{amount}|{description}'))
+        
+        invoice_text = (
+            f"💎 Amount to pay: {amount} {asset}\n\n"
+            "✅ Secure payment via Crypto Bot\n"
+            "⚡ Instant processing\n"
+            "🔐 Safe and reliable"
+        )
+        
+        bot.send_message(message.chat.id, invoice_text, reply_markup=keyboard)
+
 def create_invoice(asset, amount, description):
     url = "https://pay.crypt.bot/api/createInvoice"
-    payload = {
-        "asset": asset,
-        "amount": str(amount),
-        "description": description
-    }
-    headers = {
-        "Crypto-Pay-API-Token": CRYPTO_PAY_API_TOKEN
-    }
-    response = requests.post(url, json=payload, headers=headers)
-    if response.status_code == 200:
-        return response.json()
-    else:
-        logging.error(f"Error creating invoice: {response.text}")
-        return None
-
-# Function to check invoice status
-def get_invoice(invoice_id):
-    url = f"https://pay.crypt.bot/api/getInvoice"
-    params = {
-        "invoice_id": invoice_id
-    }
-    headers = {
-        "Crypto-Pay-API-Token": CRYPTO_PAY_API_TOKEN
-    }
-    response = requests.get(url, params=params, headers=headers)
-    if response.status_code == 200:
-        return response.json()
-    else:
-        logging.error(f"Error getting invoice: {response.text}")
-        return None
-
-# Start menu
-@bot.message_handler(commands=['start'])
-def send_welcome(message):
-    bot.send_message(
-        message.chat.id,
-        "✨Thank you for choosing our service. Here you will find promo codes for various cryptocurrencies. Don't worry about security, we sell only guaranteed promo codes.",
-        reply_markup=start_menu()
-    )
-
-# Main menu
-def start_menu():
-    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    keyboard.add(types.KeyboardButton("📝 Rules"))
-    keyboard.add(types.KeyboardButton("👤 Profile"))
-    keyboard.add(types.KeyboardButton("🔍 Find promo code"))
-    return keyboard
-
-# Handler for "Rules" button
-@bot.message_handler(func=lambda message: message.text == "📝 Rules")
-def show_rules(message):
-    bot.send_message(message.chat.id, "📌 All promo codes come with a 72-hour guarantee after purchase.\n⚠ If the promo code becomes invalid due to your actions, a refund is not possible.")
-
-# Handler for "Profile" button
-@bot.message_handler(func=lambda message: message.text == "👤 Profile")
-def show_profile(message):
-    user_id = message.chat.id
-    conn = sqlite3.connect('users.db')
-    cursor = conn.cursor()
+    payload = {"asset": asset, "amount": str(amount), "description": description}
+    headers = {"Crypto-Pay-API-Token": CRYPTO_PAY_API_TOKEN}
     
-    # Check if the user already exists
-    cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
-    user = cursor.fetchone()
+    try:
+        response = requests.post(url, json=payload, headers=headers)
+        if response.status_code == 200:
+            return response.json().get('result', None)
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Error creating invoice: {e}")
+    return None
 
-    if user:
-        name, balance, total_orders = user[1], user[2], user[3]
-    else:
-        # If no user, insert them with just the first name
-        first_name = message.from_user.first_name
-        cursor.execute("INSERT INTO users (user_id, name) VALUES (?, ?)", (user_id, first_name))
-        conn.commit()
-        name = first_name  # Set the name as their first name
-        balance, total_orders = 0.0, 0.0
-
-    profile_msg = f"❤ Name: {name}\n🔑 ID: {user_id}\n💰 Your balance: {balance}\n💲 Total orders: {total_orders}"
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton(text="📜 Order History", callback_data="order_history"))
-    markup.add(types.InlineKeyboardButton(text="🎁 Referral System", callback_data="referral_system"))
-    markup.add(types.InlineKeyboardButton(text="🔙 Back", callback_data="back_start"))
-    bot.send_message(message.chat.id, profile_msg, reply_markup=markup)
-
-
-# Order history
-@bot.callback_query_handler(func=lambda call: call.data == "order_history")
-def order_history(call):
-    user_id = call.message.chat.id
-    conn = sqlite3.connect('users.db')
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
-    user = cursor.fetchone()
-    if user:
-        total_orders = user[3]
-        bot.send_message(call.message.chat.id, f"📦 You have {total_orders} orders.")
-    else:
-        bot.send_message(call.message.chat.id, "📦 You have no orders.")
-
-# Referral system
-@bot.callback_query_handler(func=lambda call: call.data == "referral_system")
-def referral_system(call):
-    user_id = call.message.chat.id
-    referral_link = f"https://t.me/{bot.get_me().username}?start={user_id}"
-    bot.send_message(call.message.chat.id, f"💡 Earn rewards with our referral system! Invite your friends and get rewarded for every purchase they make.\n💰 Your earnings: 1 point for each successful purchase made through your referral.\n🔗 Your unique referral link: {referral_link}")
-
-
-@bot.message_handler(func=lambda message: message.text == "🔍 Find promo code")
-def find_promo_code(message):
-    # Send "Spinning the wheel..." message and remove keyboard
-    markup = types.ReplyKeyboardRemove()
-    sent_message = bot.send_message(message.chat.id, "🎰 Spinning the wheel...", reply_markup=markup)
-
-    # Delay 3 seconds
-    time.sleep(3)
-
-    # Delete the message
-    bot.delete_message(message.chat.id, sent_message.message_id)
-
-    # Send main message
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton(text="💰 Buy promo code", callback_data="buy_promo"))
-    markup.add(types.InlineKeyboardButton(text="🔙 Back", callback_data="back_start"))
-    bot.send_message(message.chat.id, "📃 Platform: {link} (hidden)\n📃 Promo code: {code} (hidden)", reply_markup=markup)
-
-# Handler for buying promo code
-@bot.callback_query_handler(func=lambda call: call.data == "buy_promo")
-def buy_promo(call):
-    asset = 'USDT'
-    amount = 5
-    send_invoice(call.message, asset, amount, 'Buying promo code')
-
-# Function to create and send invoice
-def send_invoice(message, asset, amount, period):
-    invoice = create_invoice(asset, amount, f'Payment for {period}')
-    if invoice and 'result' in invoice:
-        invoice_data = invoice['result']
-        keyboard = types.InlineKeyboardMarkup()
-        keyboard.add(types.InlineKeyboardButton(text='💰 Pay', url=invoice_data['pay_url']))
-        keyboard.add(types.InlineKeyboardButton(text='🔄 Check', callback_data=f'check|{invoice_data["invoice_id"]}|{amount}|{asset}|{period}'))
-        keyboard.add(types.InlineKeyboardButton(text='🔙 Back', callback_data='back_start'))
-        bot.send_message(message.chat.id,
-                         f'Amount to pay: {amount} {asset}\n'
-                         f'Once the payment is complete, click "Check" to confirm.',
-                         reply_markup=keyboard)
-    else:
-        bot.reply_to(message, 'An error occurred while creating the invoice. Please try again later.')
-
-# Handler for payment status check
 @bot.callback_query_handler(func=lambda call: call.data.startswith('check'))
 def check_payment(call):
-    _, invoice_id, amount, asset, period = call.data.split('|')
-    invoice_data = get_invoice(invoice_id)
-    if invoice_data and invoice_data['result']['status'] == 'paid':
-        bot.send_message(call.message.chat.id, f"✅ Payment of {amount} {asset} successfully completed.\nYour promo code: {invoice_data['result']['code']}")
-    else:
-        bot.send_message(call.message.chat.id, "❌ Payment not confirmed. Please try again later.")
-
-# Handler for "Back" button
-@bot.callback_query_handler(func=lambda call: call.data == "back_start")
-def back_to_start(call):
+    _, invoice_id, amount, *description_parts = call.data.split('|')
+    description = '|'.join(description_parts)
+    url = f"https://pay.crypt.bot/api/getInvoice?invoice_id={invoice_id}"
+    headers = {"Crypto-Pay-API-Token": CRYPTO_PAY_API_TOKEN}
+    
+    try:
+        response = requests.get(url, headers=headers)
+        if response.status_code == 200:
+            invoice_data = response.json().get('result', {})
+            if invoice_data.get('status') == 'paid':
+                conn = sqlite3.connect('users.db')
+                cursor = conn.cursor()
+                
+                if 'Premium membership' in description:
+                    days = int(description.split()[3])
+                    cursor.execute("""
+                        UPDATE users 
+                        SET premium_until = datetime('now', '+' || ? || ' days'),
+                            total_donated = total_donated + ?
+                        WHERE user_id = ?
+                    """, (days, float(amount), call.message.chat.id))
+                else:
+                    cursor.execute("""
+                        UPDATE users 
+                        SET total_donated = total_donated + ?
+                        WHERE user_id = ?
+                    """, (float(amount), call.message.chat.id))
+                
+                conn.commit()
+                conn.close()
+                
+                success_text = (
+                    "✨ Payment Successful! ✨\n\n"
+                    f"💎 Amount: {amount} USDT\n"
+                    "Thank you for your support! 🙏\n\n"
+                    "Your contribution helps us maintain and improve our service."
+                )
+                
+                bot.send_message(call.message.chat.id, success_text)
+                return
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Error checking payment: {e}")
+    
     bot.send_message(
         call.message.chat.id,
-        "You are now back at the main menu.",
-        reply_markup=start_menu()
+        "⏳ Payment not confirmed yet.\n"
+        "Please wait a few minutes and try checking again."
     )
 
-# Start bot
-bot.polling(none_stop=True)
+if __name__ == "__main__":
+    init_db()
+    logging.info("✨ Bot is starting...")
+    bot.polling(none_stop=True)
